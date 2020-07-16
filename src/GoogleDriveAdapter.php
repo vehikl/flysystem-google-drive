@@ -994,26 +994,31 @@ class GoogleDriveAdapter extends AbstractAdapter
         }
 
         $service = $this->service;
-        $client = $service->getClient();
-
-        $client->setUseBatch(true);
-        $batch = $service->createBatch();
 
         $opts = [
             'fields' => $this->fetchfieldsGet
         ];
 
-        $batch->add($this->service->files->get($itemId, $this->applyDefaultParams($opts, 'files.get')), 'obj');
+        $fileObj = null;
+        try {
+            $fileObj = $this->service->files->get($itemId, $this->applyDefaultParams($opts, 'files.get'));
+        } catch (\Google_Service_Exception $gse) {
+            $message = json_decode($gse->getMessage(), true);
+            $reasons = array_map(function ($error) {
+                return $error['reason'] ?? null;
+            }, $message['error']['errors']);
+            if (! in_array('notFound', $reasons)) {
+                throw $gse;
+            }
+        }
+
+        $hasdir = false;
         if ($checkDir && $this->useHasDir) {
-            $batch->add($service->files->listFiles($this->applyDefaultParams([
+            $hasdir = $service->files->listFiles($this->applyDefaultParams([
                 'pageSize' => 1,
                 'q' => sprintf('trashed = false and "%s" in parents and mimeType = "%s"', $itemId, self::DIRMIME)
-            ], 'files.list')), 'hasdir');
+            ], 'files.list'));
         }
-        $results = array_values($batch->execute());
-
-        list ($fileObj, $hasdir) = array_pad($results, 2, null);
-        $client->setUseBatch(false);
 
         if ($fileObj instanceof Google_Service_Drive_DriveFile) {
             if ($hasdir && $fileObj->mimeType === self::DIRMIME) {
@@ -1021,9 +1026,8 @@ class GoogleDriveAdapter extends AbstractAdapter
                     $this->cacheHasDirs[$fileObj->getId()] = (bool) $hasdir->getFiles();
                 }
             }
-        } else {
-            $fileObj = NULL;
         }
+
         $this->cacheFileObjects[$itemId] = $fileObj;
 
         return $fileObj;
